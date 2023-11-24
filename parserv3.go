@@ -792,8 +792,19 @@ func (p *Parser) parseTypeExprV3(file *ast.File, typeExpr ast.Expr, ref bool) (*
 
 	// type Foo Baz
 	case *ast.Ident:
-		result, err := p.getTypeSchemaV3(expr.Name, file, ref)
+		result, err := p.getTypeSchemaV3(expr.Name, file, true)
 		if err != nil {
+			// Let's fix named type dependency defined in http handler.
+			// This fixes advanced case, when HTTPRequest includes dependency as slice field.
+			if astTypeSpec, ok := expr.Obj.Decl.(*ast.TypeSpec); ok {
+				if astStructType, okX := astTypeSpec.Type.(*ast.StructType); okX {
+					resultX, errX := p.parseStructV3(file, astStructType.Fields)
+					if errX != nil {
+						return nil, errors.Wrap(err, errMessage)
+					}
+					return resultX, nil
+				}
+			}
 			return nil, errors.Wrap(err, errMessage)
 		}
 
@@ -952,10 +963,23 @@ func (p *Parser) parseStructFieldV3(file *ast.File, field *ast.Field) (map[strin
 	if schema == nil {
 		typeName, err := getFieldType(file, field.Type, nil)
 		if err == nil {
-			// named type
+			// Let's fix named type dependency defined in http handler.
+			// This fixes basic case, when HTTPRequest includes dependency as its immediate field (not slice or something similar).
 			schema, err = p.getTypeSchemaV3(typeName, file, true)
 			if err != nil {
-				return nil, nil, err
+				parseTypeSpecSucc := false
+				if astIdent, ok := field.Type.(*ast.Ident); ok {
+					if astDecl, ok := astIdent.Obj.Decl.(*ast.TypeSpec); ok {
+						resX, errX := p.parseTypeExprV3(file, astDecl.Type, false)
+						if errX == nil {
+							schema = resX
+							parseTypeSpecSucc = true
+						}
+					}
+				}
+				if !parseTypeSpecSucc {
+					return nil, nil, err
+				}
 			}
 
 		} else {
